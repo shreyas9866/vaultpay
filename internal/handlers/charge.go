@@ -1,26 +1,33 @@
 package handlers
 
 import (
+	"context" // Make sure context is imported
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/shreyas9866/vaultpay/internal/database"
 	"github.com/shreyas9866/vaultpay/internal/models"
 )
 
-// ChargeHandler holds the dependencies (like the database store) for our routes
-type ChargeHandler struct {
-	store *database.Store
-	redis *redis.Client // <-- 1. Added Redis client to our handler
+// 1. NEW: The Interface Contract
+type ChargeStore interface {
+	CreateCharge(ctx context.Context, charge *models.Charge) error
 }
 
-// NewChargeHandler creates a new handler instance
-func NewChargeHandler(store *database.Store, rdb *redis.Client) *ChargeHandler {
-	return &ChargeHandler{store: store, redis: rdb} // <-- 2. Inject Redis from main.go
+// 2. UPDATED: We now use the interface instead of the hardcoded *database.Store
+type ChargeHandler struct {
+	store ChargeStore 
+	redis *redis.Client
 }
+
+// 3. UPDATED: The constructor now accepts the interface
+func NewChargeHandler(store ChargeStore, rdb *redis.Client) *ChargeHandler {
+	return &ChargeHandler{store: store, redis: rdb}
+}
+
+// ... (Keep your CreateChargeRequest struct and the entire Create method exactly the same) ...
 
 // CreateChargeRequest represents the exact JSON we expect from the client.
 type CreateChargeRequest struct {

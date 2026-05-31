@@ -1,21 +1,31 @@
 package handlers
 
 import (
+	"context" // Make sure context is imported
 	"encoding/json"
 	"net/http"
 
 	"github.com/shreyas9866/vaultpay/internal/auth"
-	"github.com/shreyas9866/vaultpay/internal/database"
 	"github.com/shreyas9866/vaultpay/internal/models"
 )
 
-type AuthHandler struct {
-	store *database.Store
+// 1. NEW: The Auth Interface Contract
+type AuthStore interface {
+	CreateUser(ctx context.Context, user *models.User) error
+	CreateAPIKey(ctx context.Context, apiKey *models.APIKey) error
 }
 
-func NewAuthHandler(store *database.Store) *AuthHandler {
+// 2. UPDATED: Use the interface instead of the hardcoded Store
+type AuthHandler struct {
+	store AuthStore
+}
+
+// 3. UPDATED: Constructor accepts the interface
+func NewAuthHandler(store AuthStore) *AuthHandler {
 	return &AuthHandler{store: store}
 }
+
+// ... (Keep RegisterUserRequest and the Register method exactly as they are) ...
 
 type RegisterUserRequest struct {
 	Email string `json:"email"`
