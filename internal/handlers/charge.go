@@ -14,6 +14,7 @@ import (
 // 1. NEW: The Interface Contract
 type ChargeStore interface {
 	CreateCharge(ctx context.Context, charge *models.Charge) error
+	RefundCharge(ctx context.Context, chargeID string) (*models.Charge, error) 
 }
 
 // 2. UPDATED: We now use the interface instead of the hardcoded *database.Store
