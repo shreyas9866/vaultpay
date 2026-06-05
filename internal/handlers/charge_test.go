@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -21,6 +22,23 @@ func (m *MockStore) CreateCharge(ctx context.Context, charge *models.Charge) err
 	// We just pretend it saved successfully and return no errors
 	return nil
 }
+func (m *MockStore) RefundCharge(ctx context.Context, chargeID string) (*models.Charge, error) {
+	if chargeID == "ch_invalid_state" {
+		return nil, fmt.Errorf("invalid state transition from paid to refunded")
+	}
+	if chargeID == "ch_not_found" {
+		return nil, fmt.Errorf("charge not found")
+	}
+	
+	// Happy Path: Return a perfectly refunded charge
+	return &models.Charge{
+		ID:       chargeID,
+		Amount:   5000,
+		Currency: "USD",
+		Status:   models.StatusRefunded, // Cast to custom type if necessary, or "refunded"
+	}, nil
+}
+
 // ----------------------------
 
 func TestChargeHandler_Create_Validation(t *testing.T) {
@@ -95,6 +113,59 @@ func TestChargeHandler_Create_Validation(t *testing.T) {
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("there were unfulfilled expectations: %s", err)
 			}
+		})
+	}
+}
+func TestChargeHandler_Refund(t *testing.T) {
+	tests := []struct {
+		name         string
+		payload      string
+		expectedCode int
+		expectError  string
+	}{
+		{
+			name:         "Successful Refund",
+			payload:      `{"charge_id": "ch_valid_123"}`,
+			expectedCode: http.StatusOK,
+			expectError:  `"status":"refunded"`, // Expecting the JSON to show the updated status
+		},
+		{
+			name:         "Missing Charge ID",
+			payload:      `{"charge_id": ""}`,
+			expectedCode: http.StatusBadRequest,
+			expectError:  "charge_id is required",
+		},
+		{
+			name:         "Charge Not Found",
+			payload:      `{"charge_id": "ch_not_found"}`,
+			expectedCode: http.StatusNotFound,
+			expectError:  "charge not found",
+		},
+		{
+			name:         "Invalid State Transition",
+			payload:      `{"charge_id": "ch_invalid_state"}`,
+			expectedCode: http.StatusUnprocessableEntity,
+			expectError:  "invalid state transition",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 1. Setup Mock DB & Redis (Redis isn't used for refunds, but the handler requires it)
+			rdb, _ := redismock.NewClientMock()
+			mockDB := &MockStore{}
+			handler := NewChargeHandler(mockDB, rdb)
+
+			// 2. Build the HTTP Request
+			req := httptest.NewRequest(http.MethodPost, "/v1/refunds", bytes.NewBuffer([]byte(tt.payload)))
+			rr := httptest.NewRecorder()
+
+			// 3. Fire!
+			handler.Refund(rr, req)
+
+			// 4. Assert Results
+			assert.Equal(t, tt.expectedCode, rr.Code)
+			assert.Contains(t, rr.Body.String(), tt.expectError)
 		})
 	}
 }
