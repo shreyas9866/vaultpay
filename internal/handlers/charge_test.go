@@ -97,7 +97,7 @@ func TestChargeHandler_Create_Validation(t *testing.T) {
 
 			// 3. INJECT THE FAKE DATABASE
 			mockDB := &MockStore{}
-			handler := NewChargeHandler(mockDB, rdb)
+			handler := NewChargeHandler(mockDB, rdb,nil)
 
 			req := httptest.NewRequest(http.MethodPost, "/charges", bytes.NewBuffer([]byte(tt.payload)))
 			if tt.idempotencyKey != "" {
@@ -154,7 +154,7 @@ func TestChargeHandler_Refund(t *testing.T) {
 			// 1. Setup Mock DB & Redis (Redis isn't used for refunds, but the handler requires it)
 			rdb, _ := redismock.NewClientMock()
 			mockDB := &MockStore{}
-			handler := NewChargeHandler(mockDB, rdb)
+			handler := NewChargeHandler(mockDB, rdb,nil)
 
 			// 2. Build the HTTP Request
 			req := httptest.NewRequest(http.MethodPost, "/v1/refunds", bytes.NewBuffer([]byte(tt.payload)))

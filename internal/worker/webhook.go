@@ -5,94 +5,80 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
 
-	"github.com/shreyas9866/vaultpay/internal/database"
+	"github.com/hibiken/asynq"
 )
 
-type WebhookWorker struct {
-	store *database.Store
+// Task Type Identifier
+const TaskTypeWebhookDelivery = "webhook:deliver"
+
+// WebhookPayload is the data we serialize and drop into the Redis queue
+type WebhookPayload struct {
+	EventID   string `json:"event_id"`
+	EventType string `json:"event_type"`
+	Data      []byte `json:"data"`
 }
 
-func NewWebhookWorker(store *database.Store) *WebhookWorker {
-	return &WebhookWorker{store: store}
-}
-
-func (w *WebhookWorker) Start(ctx context.Context) {
-	log.Println("⚙️ Webhook worker started...")
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("🛑 Webhook worker shutting down...")
-			return
-		case <-ticker.C:
-			w.processNextEvent(ctx)
-		}
-	}
-}
-
-func (w *WebhookWorker) processNextEvent(ctx context.Context) {
-	event, err := w.store.FetchNextOutboxEvent(ctx)
-	if err != nil {
-		log.Printf("❌ Error fetching outbox event: %v", err)
-		return
-	}
-	if event == nil {
-		return 
-	}
-
-	// Updated to %s for the UUID string
-	log.Printf("📦 Processing event ID: %s | Type: %s", event.ID, event.EventType)
-
-	targetURL := "http://localhost:8081/webhook-receiver-test" 
-	webhookSecret := "whsec_vaultpay_super_secret_123"
-
-	signature := generateHMAC(event.Payload, webhookSecret)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(event.Payload))
-	if err != nil {
-		log.Printf("❌ Error building request: %v", err)
-		return
+// NewWebhookDeliveryTask is a helper to quickly create a new job
+func NewWebhookDeliveryTask(eventID, eventType string, data []byte) (*asynq.Task, error) {
+	payload := WebhookPayload{
+		EventID:   eventID,
+		EventType: eventType,
+		Data:      data,
 	}
 	
+	bytesPayload, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	
+	// We set a max retry limit of 5. Asynq handles the exponential backoff automatically!
+	return asynq.NewTask(TaskTypeWebhookDelivery, bytesPayload, asynq.MaxRetry(5)), nil
+}
+
+// ProcessWebhookDelivery is the consumer that runs when a job is pulled from Redis
+func ProcessWebhookDelivery(ctx context.Context, t *asynq.Task) error {
+	var p WebhookPayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("json unmarshal failed: %v", err) // Fails job immediately
+	}
+
+	log.Printf("📦 [Asynq] Processing Webhook: %s | Type: %s", p.EventID, p.EventType)
+
+	targetURL := "http://localhost:8081/webhook-receiver-test"
+	webhookSecret := "whsec_vaultpay_super_secret_123"
+
+	signature := generateHMAC(p.Data, webhookSecret)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(p.Data))
+	if err != nil {
+		return fmt.Errorf("failed to build request: %v", err)
+	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("VaultPay-Signature", signature)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 
-	if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		w.store.UpdateOutboxEventStatus(ctx, event.ID, "delivered", event.Attempts+1, sql.NullTime{})
-		log.Printf("✅ Webhook delivered successfully: Event %s", event.ID)
-		if resp != nil {
-			resp.Body.Close()
-		}
-		return
+	if err != nil {
+		// Returning an error tells Asynq: "I failed, please backoff and retry me later!"
+		return fmt.Errorf("network error sending webhook: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		log.Printf("✅ [Asynq] Webhook delivered successfully: %s", p.EventID)
+		return nil // Returning nil tells Asynq to delete the job from Redis
 	}
 
-	if resp != nil {
-		resp.Body.Close()
-	}
-
-	attempts := event.Attempts + 1
-	if attempts >= 5 {
-		w.store.UpdateOutboxEventStatus(ctx, event.ID, "failed", attempts, sql.NullTime{})
-		log.Printf("☠️ Webhook permanently failed after 5 attempts: Event %s", event.ID)
-		return
-	}
-
-	backoffSeconds := (1 << attempts) * 5 
-	nextRetry := time.Now().Add(time.Duration(backoffSeconds) * time.Second)
-
-	w.store.UpdateOutboxEventStatus(ctx, event.ID, "pending", attempts, sql.NullTime{Time: nextRetry, Valid: true})
-	log.Printf("⚠️ Webhook failed (Attempt %d). Retrying at %v: Event %s", attempts, nextRetry.Format(time.TimeOnly), event.ID)
+	return fmt.Errorf("server returned non-200 status: %d", resp.StatusCode)
 }
 
 func generateHMAC(payload []byte, secret string) string {

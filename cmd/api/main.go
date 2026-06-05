@@ -4,10 +4,11 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"os" // <-- NEW: Required for reading Environment Variables
+	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/hibiken/asynq"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
@@ -20,7 +21,6 @@ import (
 
 func main() {
 	// --- 1. POSTGRES CONNECTION ---
-	// NEW: Check Docker environment variables first, fallback to localhost
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		dsn = "postgres://vaultpay_user:vaultpay_password@127.0.0.1:5432/vaultpay?sslmode=disable"
@@ -34,7 +34,6 @@ func main() {
 	log.Println("✅ Successfully connected to PostgreSQL!")
 
 	// --- 2. REDIS CONNECTION ---
-	// NEW: Check Docker environment variables first, fallback to localhost
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
 		redisAddr = "127.0.0.1:6379"
@@ -52,14 +51,38 @@ func main() {
 	defer rdb.Close()
 	log.Println("✅ Successfully connected to Redis!")
 
-	// --- 3. INITIALIZE STORES & HANDLERS ---
+	// --- 3. INITIALIZE STORES & QUEUES ---
 	store := database.NewStore(db)
 
-	chargeHandler := handlers.NewChargeHandler(store, rdb)
+	// Set up the Asynq Client (Producer)
+	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
+	defer asynqClient.Close()
+
+	// Initialize Handlers (Now with all 3 arguments perfectly mapped)
+	chargeHandler := handlers.NewChargeHandler(store, rdb, asynqClient)
 	authHandler := handlers.NewAuthHandler(store)
 
-	webhookWorker := worker.NewWebhookWorker(store)
-	go webhookWorker.Start(context.Background())
+	// Set up the Asynq Server (Consumer)
+	asynqServer := asynq.NewServer(
+		asynq.RedisClientOpt{Addr: redisAddr},
+		asynq.Config{
+			Concurrency: 10,
+			Queues: map[string]int{
+				"default": 10,
+			},
+		},
+	)
+
+	mux := asynq.NewServeMux()
+	mux.HandleFunc(worker.TaskTypeWebhookDelivery, worker.ProcessWebhookDelivery)
+
+	// Run the Asynq server in a background goroutine
+	go func() {
+		log.Println("⚙️ Starting Asynq background worker...")
+		if err := asynqServer.Run(mux); err != nil {
+			log.Fatalf("❌ Failed to start Asynq server: %v", err)
+		}
+	}()
 
 	rateLimiter := vpmiddleware.NewRateLimiter(rdb)
 
