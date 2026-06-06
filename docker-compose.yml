@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -27,6 +25,16 @@ services:
       timeout: 5s
       retries: 5
 
+  # NEW: Jaeger Tracing UI and Collector
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: vaultpay-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true # <-- THIS UNLOCKS THE TELEMETRY DOOR
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+
   api:
     build:
       context: .
@@ -38,8 +46,11 @@ services:
     environment:
       - DATABASE_URL=postgres://vaultpay_user:vaultpay_password@postgres:5432/vaultpay?sslmode=disable
       - REDIS_ADDR=redis:6379
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318 # NEW: Tells Go where to send trace data
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      jaeger:
+        condition: service_started

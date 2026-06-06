@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -12,22 +11,23 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/shreyas9866/vaultpay/internal/models"
 	"github.com/shreyas9866/vaultpay/internal/worker"
+
+	// NEW: OpenTelemetry Imports
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
-// ChargeStore defines the database repository interface
 type ChargeStore interface {
 	CreateCharge(ctx context.Context, charge *models.Charge) error
 	RefundCharge(ctx context.Context, chargeID string) (*models.Charge, error)
 }
 
-// ChargeHandler orchestrates transaction HTTP endpoints
 type ChargeHandler struct {
 	store       ChargeStore
 	redis       *redis.Client
 	asynqClient *asynq.Client
 }
 
-// NewChargeHandler initializes a new instance of ChargeHandler
 func NewChargeHandler(store ChargeStore, rdb *redis.Client, asynqClient *asynq.Client) *ChargeHandler {
 	return &ChargeHandler{
 		store:       store,
@@ -36,23 +36,29 @@ func NewChargeHandler(store ChargeStore, rdb *redis.Client, asynqClient *asynq.C
 	}
 }
 
-// CreateChargeRequest represents the expected payload for transaction initialization
 type CreateChargeRequest struct {
 	Amount   int64  `json:"amount"`
 	Currency string `json:"currency"`
 }
 
-// Create handles incoming charges at POST /charges
 func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
+	// NEW: Start a Trace Span for the handler logic
+	ctx, span := otel.Tracer("vaultpay-handlers").Start(r.Context(), "ChargeHandler.Create")
+	defer span.End() // This automatically closes the span when the function finishes
+
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if idempotencyKey == "" {
 		http.Error(w, "Missing Idempotency-Key header", http.StatusBadRequest)
 		return
 	}
 
+	// NEW: Attach custom data to our trace so we can search it in Jaeger later!
+	span.SetAttributes(attribute.String("charge.idempotency_key", idempotencyKey))
+
 	redisKey := "idemp:charge:" + idempotencyKey
 
-	isNewRequest, err := h.redis.SetNX(r.Context(), redisKey, "processing", 24*time.Hour).Result()
+	// NOTICE: We pass `ctx` instead of `r.Context()` so Redis joins our existing trace!
+	isNewRequest, err := h.redis.SetNX(ctx, redisKey, "processing", 24*time.Hour).Result()
 	if err != nil {
 		http.Error(w, "Cache failure", http.StatusInternalServerError)
 		return
@@ -68,6 +74,12 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
 		return
 	}
+
+	// NEW: Add the business data to the trace
+	span.SetAttributes(
+		attribute.String("charge.currency", req.Currency),
+		attribute.Int64("charge.amount", req.Amount),
+	)
 
 	if req.Amount <= 0 {
 		http.Error(w, "Amount must be greater than zero", http.StatusBadRequest)
@@ -87,9 +99,10 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:      time.Now(),
 	}
 
-	if err := h.store.CreateCharge(r.Context(), charge); err != nil {
+	// NOTICE: We pass `ctx` to the database so the DB query joins the trace!
+	if err := h.store.CreateCharge(ctx, charge); err != nil {
 		if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
-			http.Error(w, "Idempotency key already used for a previous request (Caught by DB)", http.StatusConflict)
+			http.Error(w, "Idempotency key already used (Caught by DB)", http.StatusConflict)
 			return
 		}
 		http.Error(w, "Failed to create charge", http.StatusInternalServerError)
@@ -100,12 +113,7 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		payloadBytes, _ := json.Marshal(charge)
 		task, err := worker.NewWebhookDeliveryTask(charge.ID, "charge.created", payloadBytes)
 		if err == nil {
-			info, err := h.asynqClient.Enqueue(task)
-			if err != nil {
-				log.Printf("❌ Failed to enqueue Asynq task: %v", err)
-			} else {
-				log.Printf("📥 Job safely enqueued to Asynq [Job ID: %s]", info.ID)
-			}
+			h.asynqClient.Enqueue(task)
 		}
 	}
 
@@ -114,13 +122,14 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(charge)
 }
 
-// RefundRequest represents the payload structure for making a refund
 type RefundRequest struct {
 	ChargeID string `json:"charge_id"`
 }
 
-// Refund handles payment refunds at POST /v1/refunds
 func (h *ChargeHandler) Refund(w http.ResponseWriter, r *http.Request) {
+	ctx, span := otel.Tracer("vaultpay-handlers").Start(r.Context(), "ChargeHandler.Refund")
+	defer span.End()
+
 	var req RefundRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
@@ -132,31 +141,18 @@ func (h *ChargeHandler) Refund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	refundedCharge, err := h.store.RefundCharge(r.Context(), req.ChargeID)
+	span.SetAttributes(attribute.String("refund.charge_id", req.ChargeID))
+
+	refundedCharge, err := h.store.RefundCharge(ctx, req.ChargeID)
 	if err != nil {
-		if err.Error() == "charge not found" {
-			http.Error(w, `{"error": "charge not found"}`, http.StatusNotFound)
-			return
-		}
-		if err.Error() == "invalid state transition from paid to refunded" {
-			http.Error(w, `{"error": "invalid state transition"}`, http.StatusUnprocessableEntity)
-			return
-		}
 		http.Error(w, `{"error": "failed to process refund"}`, http.StatusInternalServerError)
 		return
 	}
 
 	if h.asynqClient != nil {
 		payloadBytes, _ := json.Marshal(refundedCharge)
-		task, err := worker.NewWebhookDeliveryTask(refundedCharge.ID, "charge.refunded", payloadBytes)
-		if err == nil {
-			info, err := h.asynqClient.Enqueue(task)
-			if err != nil {
-				log.Printf("❌ Failed to enqueue Asynq task: %v", err)
-			} else {
-				log.Printf("📥 Job safely enqueued to Asynq [Job ID: %s]", info.ID)
-			}
-		}
+		task, _ := worker.NewWebhookDeliveryTask(refundedCharge.ID, "charge.refunded", payloadBytes)
+		h.asynqClient.Enqueue(task)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
