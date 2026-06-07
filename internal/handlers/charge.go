@@ -9,10 +9,10 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
-	"github.com/shreyas9866/vaultpay/internal/metrics" // NEW: Metrics Package
+	"github.com/shreyas9866/vaultpay/internal/currency" // Our new converter!
+	"github.com/shreyas9866/vaultpay/internal/metrics"  // Metrics Package
 	"github.com/shreyas9866/vaultpay/internal/models"
 	"github.com/shreyas9866/vaultpay/internal/worker"
-
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -47,7 +47,7 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if idempotencyKey == "" {
-		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
+		metrics.ChargesTotal.WithLabelValues("failed").Inc()
 		http.Error(w, "Missing Idempotency-Key header", http.StatusBadRequest)
 		return
 	}
@@ -58,20 +58,20 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	isNewRequest, err := h.redis.SetNX(ctx, redisKey, "processing", 24*time.Hour).Result()
 	if err != nil {
-		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
+		metrics.ChargesTotal.WithLabelValues("failed").Inc()
 		http.Error(w, "Cache failure", http.StatusInternalServerError)
 		return
 	}
 
 	if !isNewRequest {
-		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
+		metrics.ChargesTotal.WithLabelValues("failed").Inc()
 		http.Error(w, "Idempotency key already used (Caught by Redis)", http.StatusConflict)
 		return
 	}
 
 	var req CreateChargeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
+		metrics.ChargesTotal.WithLabelValues("failed").Inc()
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
 		return
 	}
@@ -82,19 +82,37 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if req.Amount <= 0 {
-		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
+		metrics.ChargesTotal.WithLabelValues("failed").Inc()
 		http.Error(w, "Amount must be greater than zero", http.StatusBadRequest)
 		return
 	}
-	if len(req.Currency) != 3 {
-		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
-		http.Error(w, "Currency must be a 3-letter ISO code", http.StatusBadRequest)
+
+	// NEW: Strict Multi-Currency Validation
+	req.Currency = strings.ToUpper(req.Currency)
+	if req.Currency != "USD" && req.Currency != "INR" {
+		metrics.ChargesTotal.WithLabelValues("failed").Inc()
+		http.Error(w, "Only USD and INR are currently supported", http.StatusBadRequest)
 		return
 	}
 
+	// NEW: The Concurrency Pipeline & Context Cancellation
+	// Give the currency converter EXACTLY 500ms to finish, otherwise kill it.
+	convertCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+
+	usdEquivalent, err := currency.Convert(convertCtx, req.Amount, req.Currency, "USD")
+	if err != nil {
+		metrics.ChargesTotal.WithLabelValues("failed").Inc()
+		http.Error(w, "Currency exchange service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Attach the converted USD amount to our Jaeger Trace
+	span.SetAttributes(attribute.Int64("charge.usd_equivalent", usdEquivalent))
+
 	charge := &models.Charge{
 		Amount:         req.Amount,
-		Currency:       strings.ToUpper(req.Currency),
+		Currency:       req.Currency, // Store the original currency requested
 		Status:         models.StatusCreated,
 		IdempotencyKey: idempotencyKey,
 		CreatedAt:      time.Now(),
@@ -102,7 +120,7 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.CreateCharge(ctx, charge); err != nil {
-		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
+		metrics.ChargesTotal.WithLabelValues("failed").Inc()
 		if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
 			http.Error(w, "Idempotency key already used (Caught by DB)", http.StatusConflict)
 			return
@@ -119,7 +137,6 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// NEW: Record successful metric increment right at the finish line!
 	metrics.ChargesTotal.WithLabelValues("success").Inc()
 
 	w.Header().Set("Content-Type", "application/json")
