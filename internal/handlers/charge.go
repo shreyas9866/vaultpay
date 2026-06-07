@@ -9,10 +9,10 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
+	"github.com/shreyas9866/vaultpay/internal/metrics" // NEW: Metrics Package
 	"github.com/shreyas9866/vaultpay/internal/models"
 	"github.com/shreyas9866/vaultpay/internal/worker"
 
-	// NEW: OpenTelemetry Imports
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -42,50 +42,52 @@ type CreateChargeRequest struct {
 }
 
 func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
-	// NEW: Start a Trace Span for the handler logic
 	ctx, span := otel.Tracer("vaultpay-handlers").Start(r.Context(), "ChargeHandler.Create")
-	defer span.End() // This automatically closes the span when the function finishes
+	defer span.End()
 
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if idempotencyKey == "" {
+		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
 		http.Error(w, "Missing Idempotency-Key header", http.StatusBadRequest)
 		return
 	}
 
-	// NEW: Attach custom data to our trace so we can search it in Jaeger later!
 	span.SetAttributes(attribute.String("charge.idempotency_key", idempotencyKey))
 
 	redisKey := "idemp:charge:" + idempotencyKey
 
-	// NOTICE: We pass `ctx` instead of `r.Context()` so Redis joins our existing trace!
 	isNewRequest, err := h.redis.SetNX(ctx, redisKey, "processing", 24*time.Hour).Result()
 	if err != nil {
+		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
 		http.Error(w, "Cache failure", http.StatusInternalServerError)
 		return
 	}
 
 	if !isNewRequest {
+		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
 		http.Error(w, "Idempotency key already used (Caught by Redis)", http.StatusConflict)
 		return
 	}
 
 	var req CreateChargeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
 		return
 	}
 
-	// NEW: Add the business data to the trace
 	span.SetAttributes(
 		attribute.String("charge.currency", req.Currency),
 		attribute.Int64("charge.amount", req.Amount),
 	)
 
 	if req.Amount <= 0 {
+		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
 		http.Error(w, "Amount must be greater than zero", http.StatusBadRequest)
 		return
 	}
 	if len(req.Currency) != 3 {
+		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
 		http.Error(w, "Currency must be a 3-letter ISO code", http.StatusBadRequest)
 		return
 	}
@@ -99,8 +101,8 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:      time.Now(),
 	}
 
-	// NOTICE: We pass `ctx` to the database so the DB query joins the trace!
 	if err := h.store.CreateCharge(ctx, charge); err != nil {
+		metrics.ChargesTotal.WithLabelValues("failed").Inc() // Metric Tracking
 		if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
 			http.Error(w, "Idempotency key already used (Caught by DB)", http.StatusConflict)
 			return
@@ -116,6 +118,9 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 			h.asynqClient.Enqueue(task)
 		}
 	}
+
+	// NEW: Record successful metric increment right at the finish line!
+	metrics.ChargesTotal.WithLabelValues("success").Inc()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

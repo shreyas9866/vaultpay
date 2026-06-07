@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s # Scrape data every 5 seconds for near real-time dashboards
+
+scrape_configs:
+  - job_name: 'vaultpay-api'
+    static_configs:
+      - targets: ['vaultpay-api:8080'] # Points to our Go API container
