@@ -17,11 +17,11 @@ import (
 
 	"github.com/shreyas9866/vaultpay/internal/database"
 	"github.com/shreyas9866/vaultpay/internal/handlers"
-	"github.com/shreyas9866/vaultpay/internal/metrics" // NEW
+	"github.com/shreyas9866/vaultpay/internal/metrics"
 	vpmiddleware "github.com/shreyas9866/vaultpay/internal/middleware"
 	"github.com/shreyas9866/vaultpay/internal/worker"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp" // NEW
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -50,15 +50,23 @@ func main() {
 	log.Println("✅ OpenTelemetry Tracer Initialized!")
 
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" { dsn = "postgres://vaultpay_user:vaultpay_password@127.0.0.1:5432/vaultpay?sslmode=disable" }
+	if dsn == "" {
+		dsn = "postgres://vaultpay_user:vaultpay_password@127.0.0.1:5432/vaultpay?sslmode=disable"
+	}
 	db, err := sqlx.Connect("postgres", dsn)
-	if err != nil { log.Fatalf("❌ Failed to connect to database: %v", err) }
+	if err != nil {
+		log.Fatalf("❌ Failed to connect to database: %v", err)
+	}
 	defer db.Close()
 
 	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr == "" { redisAddr = "127.0.0.1:6379" }
+	if redisAddr == "" {
+		redisAddr = "127.0.0.1:6379"
+	}
 	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
-	if err := rdb.Ping(context.Background()).Err(); err != nil { log.Fatalf("❌ Failed to connect to Redis: %v", err) }
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		log.Fatalf("❌ Failed to connect to Redis: %v", err)
+	}
 	defer rdb.Close()
 
 	store := database.NewStore(db)
@@ -79,8 +87,8 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(rateLimiter.Limit)
-	
-	// NEW: Prometheus Metrics Middleware
+
+	// Prometheus Metrics Middleware
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -99,15 +107,20 @@ func main() {
 
 	r.Use(func(next http.Handler) http.Handler { return otelhttp.NewMiddleware("vaultpay-router")(next) })
 
-	// NEW: Expose the scorecard to Prometheus
+	// Expose the scorecard to Prometheus
 	r.Handle("/metrics", promhttp.Handler())
 
+	// Public Routes
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("VaultPay API is online!")) })
 	r.Post("/v1/auth/keys", authHandler.Register)
-	r.Post("/charges", chargeHandler.Create)
-	r.Post("/v1/refunds", chargeHandler.Refund)
+
+	// Secured Routes Protected by API Secret Keys
+	r.Post("/charges", vpmiddleware.RequireAuth(chargeHandler.Create))
+	r.Post("/v1/refunds", vpmiddleware.RequireAuth(chargeHandler.Refund))
 
 	port := ":8080"
 	log.Printf("🚀 Starting VaultPay server on port %s", port)
-	if err := http.ListenAndServe(port, r); err != nil { log.Fatalf("❌ Server failed to start: %v", err) }
+	if err := http.ListenAndServe(port, r); err != nil {
+		log.Fatalf("❌ Server failed to start: %v", err)
+	}
 }
