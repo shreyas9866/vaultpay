@@ -16,13 +16,32 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26' # Matching your local and Docker version
+        go-version: '1.26'
 
     - name: Verify Dependencies
       run: go mod verify
 
-    - name: Run Test Suite
-      run: go test ./... -v -cover
+    # 1. NEW: Enterprise Linting
+    - name: Run golangci-lint
+      uses: golangci/golangci-lint-action@v4
+      with:
+        version: latest
 
-    - name: Test Docker Build
-      run: docker build -t vaultpay-api:test .
+    # 2. UPGRADED: Race Detector added to tests
+    - name: Run Test Suite with Race Detector
+      run: go test ./... -race -v -cover
+
+    # 3. UPGRADED: Push to Docker Hub
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Build and Push Docker Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        # Replace 'shreyas9866' with your actual Docker Hub username if different
+        tags: shreyas9866/vaultpay-api:latest
