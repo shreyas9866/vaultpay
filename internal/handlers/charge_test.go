@@ -75,7 +75,7 @@ func TestChargeHandler_Create_Validation(t *testing.T) {
 			idempotencyKey: "idemp_test_123",
 			payload:        `{"amount": 1000, "currency": "US"}`,
 			expectedCode:   http.StatusBadRequest,
-			expectedError:  "Currency must be a 3-letter ISO code",
+			expectedError:  "Only USD and INR are currently supported", // UPDATED: Matches new logic
 		},
 		// --- 2. NEW: THE HAPPY PATH ---
 		{
@@ -116,6 +116,7 @@ func TestChargeHandler_Create_Validation(t *testing.T) {
 		})
 	}
 }
+
 func TestChargeHandler_Refund(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -145,7 +146,7 @@ func TestChargeHandler_Refund(t *testing.T) {
 			name:         "Invalid State Transition",
 			payload:      `{"charge_id": "ch_invalid_state"}`,
 			expectedCode: http.StatusUnprocessableEntity,
-			expectError:  "invalid state transition",
+			expectError:  "failed to process refund", // UPDATED: Matches the new generic JSON error
 		},
 	}
 
