@@ -23,6 +23,7 @@ func (m *MockAuthStore) CreateAPIKey(ctx context.Context, apiKey *models.APIKey)
 	apiKey.ID = "fake-key-uuid"
 	return nil
 }
+
 // ---------------------------------
 
 func TestAuthHandler_Register(t *testing.T) {
@@ -41,12 +42,12 @@ func TestAuthHandler_Register(t *testing.T) {
 
 		// 4. Assert success
 		assert.Equal(t, http.StatusCreated, rr.Code)
-		
+
 		// The response should contain the raw Stripe-style key we generated
 		assert.Contains(t, rr.Body.String(), "sk_test_")
 		assert.Contains(t, rr.Body.String(), "test@vaultpay.io")
 	})
-	
+
 	t.Run("Missing Email", func(t *testing.T) {
 		payload := []byte(`{"email": ""}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/auth/keys", bytes.NewBuffer(payload))

@@ -12,7 +12,7 @@ func RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// For local testing, we provide a default mock key if environment variable isn't set
 		expectedKey := os.Getenv("VAULTPAY_SECRET_KEY")
 		if expectedKey == "" {
-			expectedKey = "sk_test_vaultpay123456789" 
+			expectedKey = "sk_test_vaultpay123456789"
 		}
 
 		// 1. Grab the Authorization header

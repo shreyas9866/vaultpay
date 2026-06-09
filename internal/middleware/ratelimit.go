@@ -9,7 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// The updated Lua script now uses a completely unique member ID (ARGV[4]) 
+// The updated Lua script now uses a completely unique member ID (ARGV[4])
 // so simultaneous millisecond requests are counted properly!
 const slidingWindowScript = `
 	local key = KEYS[1]
@@ -56,13 +56,13 @@ func (rl *RateLimiter) Limit(next http.Handler) http.Handler {
 		}
 
 		redisKey := "rate_limit:" + clientIdentifier
-		
+
 		// Get milliseconds for the sliding window math
 		now := time.Now().UnixMilli()
-		
+
 		// Get nanoseconds to guarantee every request is unique in the Redis set
-		uniqueMember := time.Now().UnixNano() 
-		
+		uniqueMember := time.Now().UnixNano()
+
 		windowMs := int64(60000)
 		limit := 5 // KEEP AT 5 FOR THE TEST
 

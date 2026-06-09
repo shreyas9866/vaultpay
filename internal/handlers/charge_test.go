@@ -29,7 +29,7 @@ func (m *MockStore) RefundCharge(ctx context.Context, chargeID string) (*models.
 	if chargeID == "ch_not_found" {
 		return nil, fmt.Errorf("charge not found")
 	}
-	
+
 	// Happy Path: Return a perfectly refunded charge
 	return &models.Charge{
 		ID:       chargeID,
@@ -59,7 +59,7 @@ func TestChargeHandler_Create_Validation(t *testing.T) {
 		{
 			name:           "Invalid JSON",
 			idempotencyKey: "idemp_test_123",
-			payload:        `{"amount": 1000, "currency": }`, 
+			payload:        `{"amount": 1000, "currency": }`,
 			expectedCode:   http.StatusBadRequest,
 			expectedError:  "Invalid JSON payload",
 		},
@@ -73,7 +73,7 @@ func TestChargeHandler_Create_Validation(t *testing.T) {
 		{
 			name:           "Invalid Currency Code",
 			idempotencyKey: "idemp_test_123",
-			payload:        `{"amount": 1000, "currency": "US"}`, 
+			payload:        `{"amount": 1000, "currency": "US"}`,
 			expectedCode:   http.StatusBadRequest,
 			expectedError:  "Currency must be a 3-letter ISO code",
 		},
@@ -97,7 +97,7 @@ func TestChargeHandler_Create_Validation(t *testing.T) {
 
 			// 3. INJECT THE FAKE DATABASE
 			mockDB := &MockStore{}
-			handler := NewChargeHandler(mockDB, rdb,nil)
+			handler := NewChargeHandler(mockDB, rdb, nil)
 
 			req := httptest.NewRequest(http.MethodPost, "/charges", bytes.NewBuffer([]byte(tt.payload)))
 			if tt.idempotencyKey != "" {
@@ -109,7 +109,7 @@ func TestChargeHandler_Create_Validation(t *testing.T) {
 
 			assert.Equal(t, tt.expectedCode, rr.Code)
 			assert.Contains(t, rr.Body.String(), tt.expectedError)
-			
+
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("there were unfulfilled expectations: %s", err)
 			}
@@ -154,7 +154,7 @@ func TestChargeHandler_Refund(t *testing.T) {
 			// 1. Setup Mock DB & Redis (Redis isn't used for refunds, but the handler requires it)
 			rdb, _ := redismock.NewClientMock()
 			mockDB := &MockStore{}
-			handler := NewChargeHandler(mockDB, rdb,nil)
+			handler := NewChargeHandler(mockDB, rdb, nil)
 
 			// 2. Build the HTTP Request
 			req := httptest.NewRequest(http.MethodPost, "/v1/refunds", bytes.NewBuffer([]byte(tt.payload)))

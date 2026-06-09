@@ -11,7 +11,7 @@ const (
 	StatusProcessing ChargeStatus = "processing"
 	StatusPaid       ChargeStatus = "paid"
 	StatusRefunded   ChargeStatus = "refunded"
-	StatusDisputed   ChargeStatus = "disputed" 
+	StatusDisputed   ChargeStatus = "disputed"
 )
 
 type Charge struct {

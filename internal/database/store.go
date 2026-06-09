@@ -122,8 +122,8 @@ func (s *Store) RefundCharge(ctx context.Context, chargeID string) (*models.Char
 	if err != nil {
 		return nil, err
 	}
-	
-	// Defer a rollback. If the function returns early due to an error, 
+
+	// Defer a rollback. If the function returns early due to an error,
 	// the transaction safely aborts without leaving dirty data.
 	defer tx.Rollback()
 
@@ -135,7 +135,7 @@ func (s *Store) RefundCharge(ctx context.Context, chargeID string) (*models.Char
 		WHERE id = $1 
 		FOR UPDATE
 	`
-	
+
 	charge := &models.Charge{}
 	err = tx.QueryRowContext(ctx, query, chargeID).Scan(
 		&charge.ID,
@@ -168,7 +168,7 @@ func (s *Store) RefundCharge(ctx context.Context, chargeID string) (*models.Char
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Update our local memory model to reflect the change for the API response
 	charge.Status = models.StatusRefunded
 
@@ -195,6 +195,7 @@ func (s *Store) RefundCharge(ctx context.Context, chargeID string) (*models.Char
 
 	return charge, nil
 }
+
 // OutboxEvent represents a pending webhook notification
 type OutboxEvent struct {
 	ID          string
@@ -205,7 +206,7 @@ type OutboxEvent struct {
 }
 
 // FetchNextOutboxEvent grabs the oldest pending event and locks it for processing.
-// "SKIP LOCKED" ensures that if another worker is already processing an event, 
+// "SKIP LOCKED" ensures that if another worker is already processing an event,
 // this query will instantly skip it and grab the next available one.
 func (s *Store) FetchNextOutboxEvent(ctx context.Context) (*OutboxEvent, error) {
 	query := `
@@ -217,7 +218,7 @@ func (s *Store) FetchNextOutboxEvent(ctx context.Context) (*OutboxEvent, error) 
 		LIMIT 1 
 		FOR UPDATE SKIP LOCKED
 	`
-	
+
 	event := &OutboxEvent{}
 	err := s.db.QueryRowContext(ctx, query).Scan(
 		&event.ID,
@@ -226,16 +227,17 @@ func (s *Store) FetchNextOutboxEvent(ctx context.Context) (*OutboxEvent, error) 
 		&event.Attempts,
 		&event.NextRetryAt,
 	)
-	
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil // No pending events right now, this is normal
 		}
 		return nil, err
 	}
-	
+
 	return event, nil
 }
+
 // UpdateOutboxEventStatus marks an event as delivered or sets it up for a retry.
 func (s *Store) UpdateOutboxEventStatus(ctx context.Context, id string, status string, attempts int, nextRetryAt sql.NullTime) error {
 	query := `

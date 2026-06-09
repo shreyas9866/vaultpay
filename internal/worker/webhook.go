@@ -32,12 +32,12 @@ func NewWebhookDeliveryTask(eventID, eventType string, data []byte) (*asynq.Task
 		EventType: eventType,
 		Data:      data,
 	}
-	
+
 	bytesPayload, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// We set a max retry limit of 5. Asynq handles the exponential backoff automatically!
 	return asynq.NewTask(TaskTypeWebhookDelivery, bytesPayload, asynq.MaxRetry(5)), nil
 }
