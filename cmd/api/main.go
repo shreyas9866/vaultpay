@@ -118,9 +118,14 @@ func main() {
 	r.Post("/charges", vpmiddleware.RequireAuth(chargeHandler.Create))
 	r.Post("/v1/refunds", vpmiddleware.RequireAuth(chargeHandler.Refund))
 
-	port := ":8080"
+	// Look for the cloud platform's assigned port, default to 8080 locally
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
 	log.Printf("🚀 Starting VaultPay server on port %s", port)
-	if err := http.ListenAndServe(port, r); err != nil {
-		log.Fatalf("❌ Server failed to start: %v", err)
+	if err := http.ListenAndServe(":"+port, r); err != nil { 
+		log.Fatalf("❌ Server failed to start: %v", err) 
 	}
 }
