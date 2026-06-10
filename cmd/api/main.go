@@ -10,11 +10,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/hibiken/asynq"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
-
 	"github.com/shreyas9866/vaultpay/internal/database"
 	"github.com/shreyas9866/vaultpay/internal/handlers"
 	"github.com/shreyas9866/vaultpay/internal/metrics"
@@ -84,6 +84,17 @@ func main() {
 	rateLimiter := vpmiddleware.NewRateLimiter(rdb)
 
 	r := chi.NewRouter()
+
+	// NEW: Allow Web Browsers to securely connect to our API (CORS)
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"https://*", "http://*"}, // Allows browser-based testing
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "Idempotency-Key"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
+
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(rateLimiter.Limit)
@@ -125,7 +136,7 @@ func main() {
 	}
 
 	log.Printf("🚀 Starting VaultPay server on port %s", port)
-	if err := http.ListenAndServe(":"+port, r); err != nil { 
-		log.Fatalf("❌ Server failed to start: %v", err) 
+	if err := http.ListenAndServe(":"+port, r); err != nil {
+		log.Fatalf("❌ Server failed to start: %v", err)
 	}
 }
