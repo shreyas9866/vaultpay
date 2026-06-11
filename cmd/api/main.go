@@ -63,20 +63,35 @@ func main() {
 	if redisAddr == "" {
 		redisAddr = "127.0.0.1:6379"
 	}
-	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+	
+	// NEW: Grab the password from the cloud environment
+	redisPass := os.Getenv("REDIS_PASSWORD") 
+
+	// NEW: Pass the password to the Redis client
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     redisAddr,
+		Password: redisPass, 
+	})
 	if err := rdb.Ping(context.Background()).Err(); err != nil {
 		log.Fatalf("❌ Failed to connect to Redis: %v", err)
 	}
 	defer rdb.Close()
 
 	store := database.NewStore(db)
-	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddr})
+	
+	// NEW: Create a shared Redis option config that includes the password for Asynq
+	asynqRedisOpt := asynq.RedisClientOpt{
+		Addr:     redisAddr,
+		Password: redisPass,
+	}
+
+	asynqClient := asynq.NewClient(asynqRedisOpt)
 	defer asynqClient.Close()
 
 	chargeHandler := handlers.NewChargeHandler(store, rdb, asynqClient)
 	authHandler := handlers.NewAuthHandler(store)
 
-	asynqServer := asynq.NewServer(asynq.RedisClientOpt{Addr: redisAddr}, asynq.Config{Concurrency: 10, Queues: map[string]int{"default": 10}})
+	asynqServer := asynq.NewServer(asynqRedisOpt, asynq.Config{Concurrency: 10, Queues: map[string]int{"default": 10}})
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(worker.TaskTypeWebhookDelivery, worker.ProcessWebhookDelivery)
 	go asynqServer.Run(mux)
@@ -84,6 +99,11 @@ func main() {
 	rateLimiter := vpmiddleware.NewRateLimiter(rdb)
 
 	r := chi.NewRouter()
+	// Initialize the handler
+	subHandler := handlers.NewSubscriptionHandler(store)
+
+	// Add the route to your Chi router (adjust variable 'r' if yours is named differently)
+	r.Post("/v1/subscriptions/upgrade", subHandler.Upgrade)
 
 	// NEW: Allow Web Browsers to securely connect to our API (CORS)
 	r.Use(cors.Handler(cors.Options{

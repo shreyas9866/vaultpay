@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-
+    "time"
 	"github.com/jmoiron/sqlx"
 	"github.com/shreyas9866/vaultpay/internal/models"
 )
@@ -247,4 +247,46 @@ func (s *Store) UpdateOutboxEventStatus(ctx context.Context, id string, status s
 	`
 	_, err := s.db.ExecContext(ctx, query, status, attempts, nextRetryAt, id)
 	return err
+}
+// --- SUBSCRIPTION BILLING ---
+
+// Subscription represents a row in the subscriptions table
+type Subscription struct {
+	ID                 string    
+	UserID             string    
+	PlanID             string    
+	Status             string    
+	CurrentPeriodStart time.Time 
+	CurrentPeriodEnd   time.Time 
+}
+
+// GetActiveSubscription fetches the active subscription for a specific user.
+// We use LIMIT 1 to ensure we only ever grab one active billing cycle.
+func (s *Store) GetActiveSubscription(ctx context.Context, userID string) (*Subscription, error) {
+	query := `
+		SELECT id, user_id, plan_id, status, current_period_start, current_period_end 
+		FROM subscriptions 
+		WHERE user_id = $1 AND status = 'active' 
+		LIMIT 1
+	`
+
+	var sub Subscription
+	// Using standard Scan to map the SQL columns directly into our Go struct
+	err := s.db.QueryRowContext(ctx, query, userID).Scan(
+		&sub.ID, 
+		&sub.UserID, 
+		&sub.PlanID, 
+		&sub.Status,
+		&sub.CurrentPeriodStart, 
+		&sub.CurrentPeriodEnd,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("no active subscription found for user")
+		}
+		return nil, err
+	}
+
+	return &sub, nil
 }
