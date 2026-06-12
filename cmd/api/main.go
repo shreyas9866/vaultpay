@@ -148,6 +148,8 @@ func main() {
 	// Secured Routes Protected by API Secret Keys
 	r.Post("/charges", vpmiddleware.RequireAuth(chargeHandler.Create))
 	r.Post("/v1/refunds", vpmiddleware.RequireAuth(chargeHandler.Refund))
+	// Add this right below your other charge routes
+	r.Get("/v1/charges/{id}/timeline", chargeHandler.GetTimeline)
 
 	// Look for the cloud platform's assigned port, default to 8080 locally
 	port := os.Getenv("PORT")

@@ -15,11 +15,14 @@ import (
 	"github.com/shreyas9866/vaultpay/internal/worker"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"github.com/go-chi/chi/v5"
+	"github.com/shreyas9866/vaultpay/internal/database"
 )
 
 type ChargeStore interface {
 	CreateCharge(ctx context.Context, charge *models.Charge) error
 	RefundCharge(ctx context.Context, chargeID string) (*models.Charge, error)
+	GetAuditTrail(ctx context.Context, chargeID string) ([]database.PaymentEvent, error)
 }
 
 type ChargeHandler struct {
@@ -180,4 +183,32 @@ func (h *ChargeHandler) Refund(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(refundedCharge)
+}
+// GetTimeline returns the complete, immutable audit log for a specific charge
+func (h *ChargeHandler) GetTimeline(w http.ResponseWriter, r *http.Request) {
+	// Grab the charge ID right out of the URL (e.g., /v1/charges/123/timeline)
+	chargeID := chi.URLParam(r, "id")
+	if chargeID == "" {
+		http.Error(w, "Charge ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Fetch the timeline from your new database engine
+	events, err := h.store.GetAuditTrail(r.Context(), chargeID)
+	if err != nil {
+		http.Error(w, "Failed to fetch timeline: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// If no events exist, return a friendly empty array instead of null
+	if events == nil {
+		events = []database.PaymentEvent{}
+	}
+
+	// Send the receipt
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"charge_id": chargeID,
+		"timeline":  events,
+	})
 }

@@ -80,14 +80,48 @@ func (s *Store) CreateCharge(ctx context.Context, charge *models.Charge) error {
 }
 
 // UpdateChargeStatus safely advances the state machine in the database.
+// UpdateChargeStatus safely advances the state machine AND appends to the immutable audit log.
 func (s *Store) UpdateChargeStatus(ctx context.Context, chargeID string, newStatus models.ChargeStatus) error {
-	query := `
-        UPDATE charges 
-        SET status = $1, updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2
-    `
-	_, err := s.db.ExecContext(ctx, query, newStatus, chargeID)
-	return err
+	// 1. Begin the atomic transaction
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 2. Fetch the CURRENT status and lock the row (FOR UPDATE).
+	// This prevents race conditions if two webhooks hit at the exact same millisecond.
+	var oldStatus string
+	query := `SELECT status FROM charges WHERE id = $1 FOR UPDATE`
+	err = tx.QueryRowContext(ctx, query, chargeID).Scan(&oldStatus)
+	if err != nil {
+		return fmt.Errorf("failed to fetch and lock charge: %w", err)
+	}
+
+	// 3. Update the main charges table
+	updateQuery := `UPDATE charges SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+	_, err = tx.ExecContext(ctx, updateQuery, newStatus, chargeID)
+	if err != nil {
+		return fmt.Errorf("failed to update charge status: %w", err)
+	}
+
+	// 4. THE EVENT SOURCING MAGIC: Insert the immutable audit log
+	eventQuery := `
+		INSERT INTO payment_events (charge_id, previous_status, new_status, event_reason)
+		VALUES ($1, $2, $3, $4)
+	`
+	reason := "System state transition" // You can make this dynamic later!
+	_, err = tx.ExecContext(ctx, eventQuery, chargeID, oldStatus, newStatus, reason)
+	if err != nil {
+		return fmt.Errorf("failed to insert audit log event: %w", err)
+	}
+
+	// 5. Commit everything permanently
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }
 
 // CreateUser provisions a new developer account in the system.
@@ -289,4 +323,33 @@ func (s *Store) GetActiveSubscription(ctx context.Context, userID string) (*Subs
 	}
 
 	return &sub, nil
+}
+// --- AUDIT LOGS ---
+
+type PaymentEvent struct {
+	ID             string    `json:"id"`
+	ChargeID       string    `json:"charge_id"`
+	PreviousStatus *string   `json:"previous_status"` // Pointer because it can be NULL initially
+	NewStatus      string    `json:"new_status"`
+	EventReason    string    `json:"event_reason"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// GetAuditTrail fetches the complete, chronological history of a specific payment
+func (s *Store) GetAuditTrail(ctx context.Context, chargeID string) ([]PaymentEvent, error) {
+	query := `
+		SELECT id, charge_id, previous_status, new_status, event_reason, created_at 
+		FROM payment_events 
+		WHERE charge_id = $1 
+		ORDER BY created_at ASC
+	`
+	
+	var events []PaymentEvent
+	// sqlx allows us to easily map multiple rows into a slice!
+	err := s.db.SelectContext(ctx, &events, query, chargeID)
+	if err != nil {
+		return nil, err
+	}
+	
+	return events, nil
 }
