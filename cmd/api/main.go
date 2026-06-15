@@ -99,13 +99,8 @@ func main() {
 	rateLimiter := vpmiddleware.NewRateLimiter(rdb)
 
 	r := chi.NewRouter()
-	// Initialize the handler
-	subHandler := handlers.NewSubscriptionHandler(store)
 
-	// Add the route to your Chi router (adjust variable 'r' if yours is named differently)
-	r.Post("/v1/subscriptions/upgrade", subHandler.Upgrade)
-
-	// NEW: Allow Web Browsers to securely connect to our API (CORS)
+	// --- 1. GLOBAL MIDDLEWARES (MUST COME FIRST) ---
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"https://*", "http://*"}, // Allows browser-based testing
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -121,36 +116,45 @@ func main() {
 
 	// Prometheus Metrics Middleware
 	r.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			start := time.Now()
-			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-			next.ServeHTTP(ww, r)
+			ww := middleware.NewWrapResponseWriter(w, req.ProtoMajor)
+			next.ServeHTTP(ww, req)
 
-			// Don't track the /metrics endpoint itself to keep data clean
-			if r.URL.Path != "/metrics" && r.URL.Path != "/health" {
+			// Don't track the /metrics or /health endpoint itself to keep data clean
+			if req.URL.Path != "/metrics" && req.URL.Path != "/health" {
 				duration := time.Since(start).Seconds()
 				status := strconv.Itoa(ww.Status())
-				metrics.RequestsTotal.WithLabelValues(r.Method, r.URL.Path, status).Inc()
-				metrics.RequestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(duration)
+				metrics.RequestsTotal.WithLabelValues(req.Method, req.URL.Path, status).Inc()
+				metrics.RequestDuration.WithLabelValues(req.Method, req.URL.Path).Observe(duration)
 			}
 		})
 	})
 
 	r.Use(func(next http.Handler) http.Handler { return otelhttp.NewMiddleware("vaultpay-router")(next) })
 
+	// --- 2. INITIALIZE HANDLERS ---
+	subHandler := handlers.NewSubscriptionHandler(store)
+
+	// --- 3. ROUTES (MUST COME AFTER ALL MIDDLEWARES) ---
+	
 	// Expose the scorecard to Prometheus
 	r.Handle("/metrics", promhttp.Handler())
 
 	// Public Routes
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("VaultPay API is online!")) })
+	r.Get("/health", func(w http.ResponseWriter, req *http.Request) { w.Write([]byte("VaultPay API is online!")) })
 	r.Post("/v1/auth/keys", authHandler.Register)
 
 	// Secured Routes Protected by API Secret Keys
 	r.Post("/charges", vpmiddleware.RequireAuth(chargeHandler.Create))
-	r.Post("/v1/refunds", vpmiddleware.RequireAuth(chargeHandler.Refund))
-	// Add this right below your other charge routes
+	r.Post("/v1/charges/{id}/refund", chargeHandler.Refund)
+	
+	// Unprotected for testing locally, wrap in vpmiddleware.RequireAuth later if needed
 	r.Get("/v1/charges/{id}/timeline", chargeHandler.GetTimeline)
+	r.Post("/v1/subscriptions/upgrade", subHandler.Upgrade)
 
+	// --- 4. START THE SERVER ---
+	
 	// Look for the cloud platform's assigned port, default to 8080 locally
 	port := os.Getenv("PORT")
 	if port == "" {

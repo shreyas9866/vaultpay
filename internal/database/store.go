@@ -18,7 +18,6 @@ type Store struct {
 func NewStore(db *sqlx.DB) *Store {
 	return &Store{db: db}
 }
-
 // CreateCharge safely inserts a new payment and an outbox event in a single atomic transaction.
 func (s *Store) CreateCharge(ctx context.Context, charge *models.Charge) error {
 	// 1. Begin the Transaction
@@ -32,10 +31,10 @@ func (s *Store) CreateCharge(ctx context.Context, charge *models.Charge) error {
 
 	// 3. Insert the Charge
 	chargeQuery := `
-        INSERT INTO charges (amount, currency, status, idempotency_key, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id
-    `
+		INSERT INTO charges (amount, currency, status, idempotency_key, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id
+	`
 	err = tx.QueryRowxContext(ctx, chargeQuery,
 		charge.Amount,
 		charge.Currency,
@@ -57,9 +56,9 @@ func (s *Store) CreateCharge(ctx context.Context, charge *models.Charge) error {
 
 	// 5. Insert the Outbox Event
 	outboxQuery := `
-        INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
-        VALUES ($1, $2, $3, $4)
-    `
+		INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+		VALUES ($1, $2, $3, $4)
+	`
 	_, err = tx.ExecContext(ctx, outboxQuery,
 		"charge",
 		charge.ID,
@@ -78,52 +77,6 @@ func (s *Store) CreateCharge(ctx context.Context, charge *models.Charge) error {
 
 	return nil
 }
-
-// UpdateChargeStatus safely advances the state machine in the database.
-// UpdateChargeStatus safely advances the state machine AND appends to the immutable audit log.
-func (s *Store) UpdateChargeStatus(ctx context.Context, chargeID string, newStatus models.ChargeStatus) error {
-	// 1. Begin the atomic transaction
-	tx, err := s.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	// 2. Fetch the CURRENT status and lock the row (FOR UPDATE).
-	// This prevents race conditions if two webhooks hit at the exact same millisecond.
-	var oldStatus string
-	query := `SELECT status FROM charges WHERE id = $1 FOR UPDATE`
-	err = tx.QueryRowContext(ctx, query, chargeID).Scan(&oldStatus)
-	if err != nil {
-		return fmt.Errorf("failed to fetch and lock charge: %w", err)
-	}
-
-	// 3. Update the main charges table
-	updateQuery := `UPDATE charges SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
-	_, err = tx.ExecContext(ctx, updateQuery, newStatus, chargeID)
-	if err != nil {
-		return fmt.Errorf("failed to update charge status: %w", err)
-	}
-
-	// 4. THE EVENT SOURCING MAGIC: Insert the immutable audit log
-	eventQuery := `
-		INSERT INTO payment_events (charge_id, previous_status, new_status, event_reason)
-		VALUES ($1, $2, $3, $4)
-	`
-	reason := "System state transition" // You can make this dynamic later!
-	_, err = tx.ExecContext(ctx, eventQuery, chargeID, oldStatus, newStatus, reason)
-	if err != nil {
-		return fmt.Errorf("failed to insert audit log event: %w", err)
-	}
-
-	// 5. Commit everything permanently
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
-}
-
 // CreateUser provisions a new developer account in the system.
 func (s *Store) CreateUser(ctx context.Context, user *models.User) error {
 	query := `
@@ -148,7 +101,6 @@ func (s *Store) CreateAPIKey(ctx context.Context, apiKey *models.APIKey) error {
 		apiKey.KeyHash,
 	).Scan(&apiKey.ID, &apiKey.IsActive, &apiKey.CreatedAt)
 }
-
 // RefundCharge executes a concurrent-safe ACID transaction to refund a payment
 func (s *Store) RefundCharge(ctx context.Context, chargeID string) (*models.Charge, error) {
 	// 1. Begin the database transaction
@@ -156,13 +108,9 @@ func (s *Store) RefundCharge(ctx context.Context, chargeID string) (*models.Char
 	if err != nil {
 		return nil, err
 	}
-
-	// Defer a rollback. If the function returns early due to an error,
-	// the transaction safely aborts without leaving dirty data.
 	defer tx.Rollback()
 
 	// 2. Fetch the charge and lock the row using FOR UPDATE
-	// This prevents any other concurrent request from modifying this specific charge
 	query := `
 		SELECT id, amount, currency, status, idempotency_key, created_at, updated_at 
 		FROM charges 
@@ -187,10 +135,13 @@ func (s *Store) RefundCharge(ctx context.Context, chargeID string) (*models.Char
 		return nil, err
 	}
 
-	// 3. Validate the state transition using our Go State Machine
+	// 3. Validate the state transition
 	if !charge.IsValidTransition(models.StatusRefunded) {
 		return nil, fmt.Errorf("invalid state transition from %s to %s", charge.Status, models.StatusRefunded)
 	}
+
+	// Capture the old status BEFORE we change it so we can log it!
+	oldStatus := charge.Status
 
 	// 4. Update the charge status in the database
 	updateQuery := `
@@ -203,7 +154,7 @@ func (s *Store) RefundCharge(ctx context.Context, chargeID string) (*models.Char
 		return nil, err
 	}
 
-	// Update our local memory model to reflect the change for the API response
+	// Update our local memory model
 	charge.Status = models.StatusRefunded
 
 	// 5. Serialize the payload for our Outbox Event notification
@@ -212,7 +163,7 @@ func (s *Store) RefundCharge(ctx context.Context, chargeID string) (*models.Char
 		return nil, err
 	}
 
-	// 6. Record the event in the outbox table within the SAME transaction
+	// 6. Record the event in the outbox table
 	outboxQuery := `
 		INSERT INTO outbox_events (event_type, payload) 
 		VALUES ($1, $2)
@@ -222,7 +173,17 @@ func (s *Store) RefundCharge(ctx context.Context, chargeID string) (*models.Char
 		return nil, err
 	}
 
-	// 7. Commit the entire transaction atomically
+	// 7. Record the immutable audit log!
+	auditQuery := `
+		INSERT INTO payment_events (charge_id, previous_status, new_status, event_reason)
+		VALUES ($1, $2, $3, $4)
+	`
+	_, err = tx.ExecContext(ctx, auditQuery, chargeID, oldStatus, models.StatusRefunded, "Refund requested via API")
+	if err != nil {
+		return nil, err
+	}
+
+	// 8. Commit the entire transaction atomically
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -327,12 +288,12 @@ func (s *Store) GetActiveSubscription(ctx context.Context, userID string) (*Subs
 // --- AUDIT LOGS ---
 
 type PaymentEvent struct {
-	ID             string    `json:"id"`
-	ChargeID       string    `json:"charge_id"`
-	PreviousStatus *string   `json:"previous_status"` // Pointer because it can be NULL initially
-	NewStatus      string    `json:"new_status"`
-	EventReason    string    `json:"event_reason"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             string    `db:"id" json:"id"`
+	ChargeID       string    `db:"charge_id" json:"charge_id"`
+	PreviousStatus *string   `db:"previous_status" json:"previous_status"`
+	NewStatus      string    `db:"new_status" json:"new_status"`
+	EventReason    string    `db:"event_reason" json:"event_reason"`
+	CreatedAt      time.Time `db:"created_at" json:"created_at"`
 }
 
 // GetAuditTrail fetches the complete, chronological history of a specific payment

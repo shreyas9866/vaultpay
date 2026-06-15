@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -170,6 +171,8 @@ func (h *ChargeHandler) Refund(w http.ResponseWriter, r *http.Request) {
 
 	refundedCharge, err := h.store.RefundCharge(ctx, req.ChargeID)
 	if err != nil {
+		// THE TRAP IS SET: This will print the exact reason to your terminal!
+		log.Printf("❌ CRITICAL REFUND ERROR: %v", err)
 		http.Error(w, `{"error": "failed to process refund"}`, http.StatusInternalServerError)
 		return
 	}
@@ -184,6 +187,7 @@ func (h *ChargeHandler) Refund(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(refundedCharge)
 }
+
 // GetTimeline returns the complete, immutable audit log for a specific charge
 func (h *ChargeHandler) GetTimeline(w http.ResponseWriter, r *http.Request) {
 	// Grab the charge ID right out of the URL (e.g., /v1/charges/123/timeline)

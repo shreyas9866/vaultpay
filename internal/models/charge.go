@@ -5,11 +5,11 @@ import "time"
 // 1. Define the custom type explicitly so Go is happy
 type ChargeStatus string
 
-// 2. Define all states using that specific type (this fixes the 'undefined' error)
+// 2. Define all states using that specific type
 const (
 	StatusCreated    ChargeStatus = "created"
 	StatusProcessing ChargeStatus = "processing"
-	StatusPaid       ChargeStatus = "paid"
+	StatusSucceeded  ChargeStatus = "succeeded" // FIXED: Matches your database perfectly!
 	StatusRefunded   ChargeStatus = "refunded"
 	StatusDisputed   ChargeStatus = "disputed"
 )
@@ -24,17 +24,17 @@ type Charge struct {
 	UpdatedAt      time.Time    `db:"updated_at" json:"updated_at"`
 }
 
-// 3. The map MUST use ChargeStatus, not string
+// 3. The state machine map
 var validTransitions = map[ChargeStatus]map[ChargeStatus]bool{
 	StatusCreated: {
 		StatusProcessing: true,
-		StatusPaid:       true,
+		StatusSucceeded:  true,
 	},
 	StatusProcessing: {
-		StatusPaid:     true,
-		StatusDisputed: true,
+		StatusSucceeded:  true,
+		StatusDisputed:   true,
 	},
-	StatusPaid: {
+	StatusSucceeded: { // The golden key: allows succeeded to become refunded!
 		StatusRefunded: true,
 		StatusDisputed: true,
 	},
