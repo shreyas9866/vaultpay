@@ -158,12 +158,12 @@ func (h *ChargeHandler) Refund(w http.ResponseWriter, r *http.Request) {
 
 	var req RefundRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+		RespondWithError(w, http.StatusBadRequest, "Malformed Request", "The request body contains invalid or improperly formatted JSON.")
 		return
 	}
 
 	if req.ChargeID == "" {
-		http.Error(w, `{"error": "charge_id is required"}`, http.StatusBadRequest)
+		RespondWithError(w, http.StatusBadRequest, "Invalid Request", "The charge_id field is required in the JSON body.")
 		return
 	}
 
@@ -171,9 +171,9 @@ func (h *ChargeHandler) Refund(w http.ResponseWriter, r *http.Request) {
 
 	refundedCharge, err := h.store.RefundCharge(ctx, req.ChargeID)
 	if err != nil {
-		// THE TRAP IS SET: This will print the exact reason to your terminal!
 		log.Printf("❌ CRITICAL REFUND ERROR: %v", err)
-		http.Error(w, `{"error": "failed to process refund"}`, http.StatusInternalServerError)
+		// Upgrade the 500 error here:
+		RespondWithError(w, http.StatusInternalServerError, "Refund Processing Failed", "The system encountered an error while attempting to process this refund. Please try again later.")
 		return
 	}
 

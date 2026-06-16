@@ -73,3 +73,12 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin # Default password for our local dashboard
     depends_on:
       - prometheus
+  swagger-ui:
+    image: swaggerapi/swagger-ui:latest
+    container_name: vaultpay-swagger
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./docs/openapi.yaml:/openapi.yaml # Changed path
+    environment:
+      SWAGGER_JSON: /openapi.yaml # Changed path

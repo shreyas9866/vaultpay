@@ -1,0 +1,131 @@
+openapi: 3.0.3
+info:
+  title: VaultPay API
+  description: A robust, event-sourced payment engine.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+paths:
+  /v1/charges/{id}/refund:
+    post:
+      summary: Refund a charge
+      description: Transitions a succeeded charge to refunded and logs the event.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The unique identifier of the charge to refund.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - charge_id
+              properties:
+                charge_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Successfully refunded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Charge'
+        '400':
+          description: Bad Request (Invalid JSON or missing fields)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+  /v1/charges/{id}/timeline:
+    get:
+      summary: Get charge timeline
+      description: Returns the immutable audit log (event sourcing) for a specific charge.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Audit timeline retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  charge_id:
+                    type: string
+                    format: uuid
+                  timeline:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PaymentEvent'
+
+components:
+  schemas:
+    Charge:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+          description: Amount in cents
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [created, processing, succeeded, refunded, disputed]
+        idempotency_key:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PaymentEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        charge_id:
+          type: string
+          format: uuid
+        previous_status:
+          type: string
+        new_status:
+          type: string
+        event_reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ProblemDetail:
+      type: object
+      description: RFC 7807 standard error response
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
