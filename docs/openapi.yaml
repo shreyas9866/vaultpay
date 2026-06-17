@@ -129,3 +129,13 @@ components:
           type: integer
         detail:
           type: string
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API Key
+      description: Enter your VaultPay Master API Key (e.g., sk_test_...)
+
+security:
+  - bearerAuth: []

@@ -145,12 +145,12 @@ func main() {
 	r.Get("/health", func(w http.ResponseWriter, req *http.Request) { w.Write([]byte("VaultPay API is online!")) })
 	r.Post("/v1/auth/keys", authHandler.Register)
 
-	// Secured Routes Protected by API Secret Keys
-	r.Post("/charges", vpmiddleware.RequireAuth(chargeHandler.Create))
-	r.Post("/v1/charges/{id}/refund", chargeHandler.Refund)
+	// 🔒 Secured Routes Protected by the Master API Key
+	r.Post("/v1/charges", vpmiddleware.RequireAuth(chargeHandler.Create))
+	r.Post("/v1/charges/{id}/refund", vpmiddleware.RequireAuth(chargeHandler.Refund))
+	r.Get("/v1/charges/{id}/timeline", vpmiddleware.RequireAuth(chargeHandler.GetTimeline))
 	
-	// Unprotected for testing locally, wrap in vpmiddleware.RequireAuth later if needed
-	r.Get("/v1/charges/{id}/timeline", chargeHandler.GetTimeline)
+	// Subscriptions can remain unprotected for now or wrapped later
 	r.Post("/v1/subscriptions/upgrade", subHandler.Upgrade)
 
 	// --- 4. START THE SERVER ---

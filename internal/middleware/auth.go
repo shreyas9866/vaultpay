@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/shreyas9866/vaultpay/internal/handlers"
 )
 
 // RequireAuth intercepts the request and checks for a valid Secret Key
@@ -18,31 +20,25 @@ func RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// 1. Grab the Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error": "Unauthorized: Missing API Key"}`))
+			handlers.RespondWithError(w, http.StatusUnauthorized, "Unauthorized", "Missing Authorization header. Please provide a valid Bearer token.")
 			return
 		}
 
 		// 2. The header must look like "Bearer sk_test_..."
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error": "Unauthorized: Malformed Authorization header"}`))
+			handlers.RespondWithError(w, http.StatusUnauthorized, "Malformed Header", "Authorization header must be in the format: Bearer <API_KEY>")
 			return
 		}
 
 		// 3. Compare the keys
 		providedKey := parts[1]
 		if providedKey != expectedKey {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error": "Unauthorized: Invalid API Key"}`))
+			handlers.RespondWithError(w, http.StatusUnauthorized, "Invalid API Key", "The provided API key is incorrect or has been revoked.")
 			return
 		}
 
 		// 4. If the key matches, open the door!
-		next.ServeHTTP(w, r)
+		next(w, r)
 	}
 }
