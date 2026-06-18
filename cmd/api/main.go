@@ -146,8 +146,12 @@ func main() {
 	r.Post("/v1/auth/keys", authHandler.Register)
 
 	// 🔒 Secured Routes Protected by the Master API Key
-	r.Post("/v1/charges", vpmiddleware.RequireAuth(chargeHandler.Create))
-	r.Post("/v1/charges/{id}/refund", vpmiddleware.RequireAuth(chargeHandler.Refund))
+	
+	// Wrap the POST routes in our new Idempotency shield!
+	r.With(vpmiddleware.Idempotency(rdb)).Post("/v1/charges", vpmiddleware.RequireAuth(chargeHandler.Create))
+	r.With(vpmiddleware.Idempotency(rdb)).Post("/v1/charges/{id}/refund", vpmiddleware.RequireAuth(chargeHandler.Refund))
+	
+	// GET requests don't mutate data, so they don't need idempotency
 	r.Get("/v1/charges/{id}/timeline", vpmiddleware.RequireAuth(chargeHandler.GetTimeline))
 	
 	// Subscriptions can remain unprotected for now or wrapped later
