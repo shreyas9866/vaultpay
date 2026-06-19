@@ -3,9 +3,6 @@ package worker
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,74 +12,77 @@ import (
 	"github.com/hibiken/asynq"
 )
 
-// Task Type Identifier
-const TaskTypeWebhookDelivery = "webhook:deliver"
+// TaskTypeWebhookDelivery is the routing key for Redis
+const TaskTypeWebhookDelivery = "webhook:delivery"
 
-// WebhookPayload is the data we serialize and drop into the Redis queue
+// WebhookPayload is the JSON data sent to the merchant
 type WebhookPayload struct {
 	EventID   string `json:"event_id"`
 	EventType string `json:"event_type"`
-	Data      []byte `json:"data"`
+	ChargeID  string `json:"charge_id"`
+	Status    string `json:"status"`
 }
 
-// NewWebhookDeliveryTask is a helper to quickly create a new job
-func NewWebhookDeliveryTask(eventID, eventType string, data []byte) (*asynq.Task, error) {
-	payload := WebhookPayload{
-		EventID:   eventID,
-		EventType: eventType,
-		Data:      data,
-	}
-
-	bytesPayload, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	// We set a max retry limit of 5. Asynq handles the exponential backoff automatically!
-	return asynq.NewTask(TaskTypeWebhookDelivery, bytesPayload, asynq.MaxRetry(5)), nil
+// WebhookTask is the internal structure saved in Redis
+type WebhookTask struct {
+	URL     string         `json:"url"`
+	Payload WebhookPayload `json:"payload"`
 }
 
-// ProcessWebhookDelivery is the consumer that runs when a job is pulled from Redis
+// ProcessWebhookDelivery is the worker that actually fires the HTTP request
 func ProcessWebhookDelivery(ctx context.Context, t *asynq.Task) error {
-	var p WebhookPayload
-	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("json unmarshal failed: %v", err) // Fails job immediately
+	var task WebhookTask
+	if err := json.Unmarshal(t.Payload(), &task); err != nil {
+		return fmt.Errorf("json.Unmarshal failed: %v: %w", err, asynq.SkipRetry)
 	}
 
-	log.Printf("📦 [Asynq] Processing Webhook: %s | Type: %s", p.EventID, p.EventType)
-
-	targetURL := "http://localhost:8081/webhook-receiver-test"
-	webhookSecret := "whsec_vaultpay_super_secret_123"
-
-	signature := generateHMAC(p.Data, webhookSecret)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(p.Data))
+	requestBody, err := json.Marshal(task.Payload)
 	if err != nil {
-		return fmt.Errorf("failed to build request: %v", err)
+		return fmt.Errorf("failed to marshal webhook payload: %v: %w", err, asynq.SkipRetry)
 	}
 
+	log.Printf("🚀 Firing webhook [%s] to %s", task.Payload.EventType, task.URL)
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", task.URL, bytes.NewBuffer(requestBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+	
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("VaultPay-Signature", signature)
+	req.Header.Set("User-Agent", "VaultPay-Webhook-Worker/1.0")
 
-	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
-
 	if err != nil {
-		// Returning an error tells Asynq: "I failed, please backoff and retry me later!"
-		return fmt.Errorf("network error sending webhook: %v", err)
+		return fmt.Errorf("failed to send webhook (server down or timeout): %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		log.Printf("✅ [Asynq] Webhook delivered successfully: %s", p.EventID)
-		return nil // Returning nil tells Asynq to delete the job from Redis
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("merchant server rejected the webhook with status: %d", resp.StatusCode)
 	}
 
-	return fmt.Errorf("server returned non-200 status: %d", resp.StatusCode)
+	log.Printf("✅ Webhook delivered successfully to %s", task.URL)
+	return nil
 }
 
-func generateHMAC(payload []byte, secret string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(payload)
-	return hex.EncodeToString(mac.Sum(nil))
+// EnqueueWebhook drops the task into the Redis queue
+func EnqueueWebhook(client *asynq.Client, url string, payload WebhookPayload) error {
+	taskData := WebhookTask{
+		URL:     url,
+		Payload: payload,
+	}
+
+	payloadBytes, err := json.Marshal(taskData)
+	if err != nil {
+		return err
+	}
+
+	task := asynq.NewTask(TaskTypeWebhookDelivery, payloadBytes, asynq.MaxRetry(5))
+	
+	_, err = client.Enqueue(task)
+	return err
 }

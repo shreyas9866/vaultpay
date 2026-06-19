@@ -14,6 +14,16 @@ import (
 type Store struct {
 	db *sqlx.DB
 }
+// Charge represents a single payment record in the database
+type Charge struct {
+	ID             string    `db:"id"`
+	Amount         int64     `db:"amount"`
+	Currency       string    `db:"currency"`
+	Status         string    `db:"status"`
+	IdempotencyKey *string   `db:"idempotency_key"` 
+	CreatedAt      time.Time `db:"created_at"`
+	UpdatedAt      time.Time `db:"updated_at"`
+}
 
 func NewStore(db *sqlx.DB) *Store {
 	return &Store{db: db}
@@ -313,4 +323,35 @@ func (s *Store) GetAuditTrail(ctx context.Context, chargeID string) ([]PaymentEv
 	}
 	
 	return events, nil
+}
+// GetCharge fetches a single charge by its ID
+func (s *Store) GetCharge(id string) (*Charge, error) {
+	var charge Charge
+	// Removed idempotency_key from the SELECT statement so Postgres doesn't panic!
+	query := `SELECT id, amount, currency, status, created_at, updated_at FROM charges WHERE id = $1`
+	err := s.db.Get(&charge, query, id)
+	return &charge, err
+}
+
+// UpdateChargeStatus changes the status of a charge (e.g., to 'disputed' or 'refunded')
+func (s *Store) UpdateChargeStatus(id, status string) error {
+	query := `UPDATE charges SET status = $1, updated_at = NOW() WHERE id = $2`
+	_, err := s.db.Exec(query, status, id)
+	return err
+}
+// LogPaymentEvent records state transitions for event sourcing
+func (s *Store) LogPaymentEvent(id, chargeID, previousStatus, newStatus, reason string) error {
+	query := `INSERT INTO payment_events (id, charge_id, previous_status, new_status, event_reason, created_at) 
+	          VALUES ($1, $2, $3, $4, $5, NOW())`
+	_, err := s.db.Exec(query, id, chargeID, previousStatus, newStatus, reason)
+	return err
+}
+
+// GetUserByEmail fetches a user for login verification
+func (s *Store) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
+	var user models.User
+	// Removed updated_at so it perfectly matches your database schema!
+	query := `SELECT id, email, created_at FROM users WHERE email = $1`
+	err := s.db.GetContext(ctx, &user, query, email)
+	return &user, err
 }

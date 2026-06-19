@@ -91,7 +91,7 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// NEW: Strict Multi-Currency Validation
+	// Strict Multi-Currency Validation
 	req.Currency = strings.ToUpper(req.Currency)
 	if req.Currency != "USD" && req.Currency != "INR" {
 		metrics.ChargesTotal.WithLabelValues("failed").Inc()
@@ -99,7 +99,7 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// NEW: The Concurrency Pipeline & Context Cancellation
+	// The Concurrency Pipeline & Context Cancellation
 	// Give the currency converter EXACTLY 500ms to finish, otherwise kill it.
 	convertCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
@@ -133,12 +133,16 @@ func (h *ChargeHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// NEW: Use the updated Webhook Enqueue method
 	if h.asynqClient != nil {
-		payloadBytes, _ := json.Marshal(charge)
-		task, err := worker.NewWebhookDeliveryTask(charge.ID, "charge.created", payloadBytes)
-		if err == nil {
-			h.asynqClient.Enqueue(task)
+		payload := worker.WebhookPayload{
+			EventID:   "evt_" + charge.ID, 
+			EventType: "charge.created",
+			ChargeID:  charge.ID,
+			Status:    string(charge.Status),
 		}
+		// Fire and forget to the background worker
+		worker.EnqueueWebhook(h.asynqClient, "https://webhook.site/your-custom-webhook-url", payload)
 	}
 
 	metrics.ChargesTotal.WithLabelValues("success").Inc()
@@ -172,15 +176,19 @@ func (h *ChargeHandler) Refund(w http.ResponseWriter, r *http.Request) {
 	refundedCharge, err := h.store.RefundCharge(ctx, req.ChargeID)
 	if err != nil {
 		log.Printf("❌ CRITICAL REFUND ERROR: %v", err)
-		// Upgrade the 500 error here:
 		RespondWithError(w, http.StatusInternalServerError, "Refund Processing Failed", "The system encountered an error while attempting to process this refund. Please try again later.")
 		return
 	}
 
+	// NEW: Use the updated Webhook Enqueue method
 	if h.asynqClient != nil {
-		payloadBytes, _ := json.Marshal(refundedCharge)
-		task, _ := worker.NewWebhookDeliveryTask(refundedCharge.ID, "charge.refunded", payloadBytes)
-		h.asynqClient.Enqueue(task)
+		payload := worker.WebhookPayload{
+			EventID:   "evt_" + refundedCharge.ID,
+			EventType: "charge.refunded",
+			ChargeID:  refundedCharge.ID,
+			Status:    string(refundedCharge.Status),
+		}
+		worker.EnqueueWebhook(h.asynqClient, "https://webhook.site/your-custom-webhook-url", payload)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

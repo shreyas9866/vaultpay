@@ -16,3 +16,8 @@
 
 # Go workspace file
 go.work
+
+# RSA Keys
+*.pem
+private.pem
+public.pem

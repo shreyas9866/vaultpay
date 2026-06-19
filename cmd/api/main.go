@@ -20,7 +20,7 @@ import (
 	"github.com/shreyas9866/vaultpay/internal/metrics"
 	vpmiddleware "github.com/shreyas9866/vaultpay/internal/middleware"
 	"github.com/shreyas9866/vaultpay/internal/worker"
-
+    "github.com/shreyas9866/vaultpay/internal/auth"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
@@ -89,7 +89,11 @@ func main() {
 	defer asynqClient.Close()
 
 	chargeHandler := handlers.NewChargeHandler(store, rdb, asynqClient)
-	authHandler := handlers.NewAuthHandler(store)
+	jwtManager, err := auth.NewJWTManager("keys/private.pem", "keys/public.pem")
+	if err != nil {
+		log.Fatalf("❌ Failed to load RSA keys: %v", err)
+	}
+	authHandler := handlers.NewAuthHandler(store, jwtManager)
 
 	asynqServer := asynq.NewServer(asynqRedisOpt, asynq.Config{Concurrency: 10, Queues: map[string]int{"default": 10}})
 	mux := asynq.NewServeMux()
@@ -134,6 +138,7 @@ func main() {
 	r.Use(func(next http.Handler) http.Handler { return otelhttp.NewMiddleware("vaultpay-router")(next) })
 
 	// --- 2. INITIALIZE HANDLERS ---
+	disputeHandler := handlers.NewDisputeHandler(store, asynqClient)
 	subHandler := handlers.NewSubscriptionHandler(store)
 
 	// --- 3. ROUTES (MUST COME AFTER ALL MIDDLEWARES) ---
@@ -144,13 +149,25 @@ func main() {
 	// Public Routes
 	r.Get("/health", func(w http.ResponseWriter, req *http.Request) { w.Write([]byte("VaultPay API is online!")) })
 	r.Post("/v1/auth/keys", authHandler.Register)
+	r.Post("/v1/auth/login", authHandler.Login)
+
+	// We create a new router group that forces every request to pass the RequireJWT bouncer
+	r.Group(func(r chi.Router) {
+		r.Use(handlers.RequireJWT(jwtManager))
+
+		// A simple test route to prove you got inside
+		r.Get("/v1/vault/secret", func(w http.ResponseWriter, r *http.Request) {
+			userID := r.Context().Value("userID").(string)
+			w.Write([]byte("Welcome to the Vault! Your verified User ID is: " + userID))
+		})
+	})
 
 	// 🔒 Secured Routes Protected by the Master API Key
 	
 	// Wrap the POST routes in our new Idempotency shield!
 	r.With(vpmiddleware.Idempotency(rdb)).Post("/v1/charges", vpmiddleware.RequireAuth(chargeHandler.Create))
 	r.With(vpmiddleware.Idempotency(rdb)).Post("/v1/charges/{id}/refund", vpmiddleware.RequireAuth(chargeHandler.Refund))
-	
+    r.With(vpmiddleware.Idempotency(rdb)).Post("/v1/disputes", vpmiddleware.RequireAuth(disputeHandler.Create))	
 	// GET requests don't mutate data, so they don't need idempotency
 	r.Get("/v1/charges/{id}/timeline", vpmiddleware.RequireAuth(chargeHandler.GetTimeline))
 	
