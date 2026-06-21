@@ -1,32 +1,30 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
+	"strings" 
+	"time"    
 
+	"github.com/redis/go-redis/v9"
 	"github.com/shreyas9866/vaultpay/internal/auth"
-	"github.com/shreyas9866/vaultpay/internal/models"
+	"github.com/shreyas9866/vaultpay/internal/database"
+	"github.com/shreyas9866/vaultpay/internal/models" // <-- The missing link!
 )
 
-// 1. UPDATED: Added GetUserByEmail to our interface contract
-type AuthStore interface {
-	CreateUser(ctx context.Context, user *models.User) error
-	CreateAPIKey(ctx context.Context, apiKey *models.APIKey) error
-	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
-}
-
-// 2. UPDATED: Added the JWT Token Factory
+// AuthHandler handles all authentication routes
 type AuthHandler struct {
-	store      AuthStore
-	jwtManager *auth.JWTManager
+	store       *database.Store
+	jwtManager  *auth.JWTManager
+	redisClient *redis.Client // <-- The missing Redis client!
 }
 
-// 3. UPDATED: Constructor now accepts the JWT Token Factory
-func NewAuthHandler(store AuthStore, jwtManager *auth.JWTManager) *AuthHandler {
+// NewAuthHandler creates a new AuthHandler
+func NewAuthHandler(store *database.Store, jwtManager *auth.JWTManager, redisClient *redis.Client) *AuthHandler {
 	return &AuthHandler{
-		store:      store,
-		jwtManager: jwtManager,
+		store:       store,
+		jwtManager:  jwtManager,
+		redisClient: redisClient,
 	}
 }
 
@@ -128,4 +126,66 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
+}
+// Logout invalidates the current JWT by adding it to the Redis Blacklist
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	// 1. Grab the auth header
+	authHeader := r.Header.Get("Authorization")
+	parts := strings.Split(authHeader, " ")
+	tokenString := parts[1] // We know this is safe because the bouncer already checked it!
+
+	// 2. Add the token to Redis with a 15-minute expiration
+	// After 15 mins, the token naturally expires anyway, so Redis automatically cleans it up to save memory.
+	err := h.redisClient.Set(r.Context(), tokenString, "revoked", 15*time.Minute).Err()
+	if err != nil {
+		http.Error(w, "Failed to process logout", http.StatusInternalServerError)
+		return
+	}
+
+	// 3. Confirm the lockdown
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"message": "Successfully logged out. Token revoked."}`))
+}
+// Refresh handles rotating the access token using a valid refresh token
+func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	// 1. Parse the incoming JSON to grab the refresh token
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+		return
+	}
+
+	// 2. Mathematically verify the refresh token signature using the Bouncer logic
+	claims, err := h.jwtManager.VerifyToken(req.RefreshToken)
+	if err != nil {
+		http.Error(w, "Invalid or expired refresh token", http.StatusUnauthorized)
+		return
+	}
+
+	// 3. Extract the User ID from the valid token
+	userID, ok := claims["sub"].(string)
+	if !ok {
+		http.Error(w, "Invalid token claims", http.StatusUnauthorized)
+		return
+	}
+
+	// 4. Mint a fresh pair of keys! 
+	// NOTE: If you called your token generation function something different in your Login handler, 
+	// just update this line to match it!
+	accessToken, newRefreshToken, err := h.jwtManager.GenerateTokens(userID) 
+	if err != nil {
+		http.Error(w, "Failed to generate new tokens", http.StatusInternalServerError)
+		return
+	}
+
+	// 5. Send the new keys back to the client
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"access_token":  accessToken,
+		"refresh_token": newRefreshToken,
+	})
 }

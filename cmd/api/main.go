@@ -7,14 +7,13 @@ import (
 	"os"
 	"strconv"
 	"time"
-
+    "github.com/redis/go-redis/v9"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/hibiken/asynq"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
-	"github.com/redis/go-redis/v9"
 	"github.com/shreyas9866/vaultpay/internal/database"
 	"github.com/shreyas9866/vaultpay/internal/handlers"
 	"github.com/shreyas9866/vaultpay/internal/metrics"
@@ -58,6 +57,17 @@ func main() {
 		log.Fatalf("❌ Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+    
+	// Connect to Redis
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	
+	// Test the connection
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		log.Fatal("❌ Failed to connect to Redis:", err)
+	}
+	log.Println("✅ Redis Blacklist Online!")
 
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
@@ -93,7 +103,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("❌ Failed to load RSA keys: %v", err)
 	}
-	authHandler := handlers.NewAuthHandler(store, jwtManager)
+	authHandler := handlers.NewAuthHandler(store, jwtManager,redisClient)
 
 	asynqServer := asynq.NewServer(asynqRedisOpt, asynq.Config{Concurrency: 10, Queues: map[string]int{"default": 10}})
 	mux := asynq.NewServeMux()
@@ -150,16 +160,29 @@ func main() {
 	r.Get("/health", func(w http.ResponseWriter, req *http.Request) { w.Write([]byte("VaultPay API is online!")) })
 	r.Post("/v1/auth/keys", authHandler.Register)
 	r.Post("/v1/auth/login", authHandler.Login)
+	r.Post("/v1/auth/refresh", authHandler.Refresh)
 
 	// We create a new router group that forces every request to pass the RequireJWT bouncer
 	r.Group(func(r chi.Router) {
-		r.Use(handlers.RequireJWT(jwtManager))
+		r.Use(handlers.RequireJWT(jwtManager,redisClient))
 
 		// A simple test route to prove you got inside
 		r.Get("/v1/vault/secret", func(w http.ResponseWriter, r *http.Request) {
 			userID := r.Context().Value("userID").(string)
 			w.Write([]byte("Welcome to the Vault! Your verified User ID is: " + userID))
 		})
+	})
+	// --- SECURE ROUTES ---
+	r.Group(func(r chi.Router) {
+		r.Use(handlers.RequireJWT(jwtManager, redisClient))
+
+		r.Get("/v1/vault/secret", func(w http.ResponseWriter, r *http.Request) {
+			userID := r.Context().Value("userID").(string)
+			w.Write([]byte("Welcome to the Vault! Your verified User ID is: " + userID))
+		})
+
+		// NEW: The Logout Route
+		r.Post("/v1/auth/logout", authHandler.Logout)
 	})
 
 	// 🔒 Secured Routes Protected by the Master API Key
