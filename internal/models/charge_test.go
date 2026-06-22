@@ -8,23 +8,23 @@ import (
 func TestCharge_IsValidTransition(t *testing.T) {
 	tests := []struct {
 		name          string
-		currentStatus ChargeStatus // <-- Changed from string
-		newStatus     ChargeStatus // <-- Changed from string
+		currentStatus ChargeStatus 
+		newStatus     ChargeStatus 
 		expectValid   bool
 	}{
 		// The Happy Paths
 		{"Created to Processing", StatusCreated, StatusProcessing, true},
-		{"Processing to Paid", StatusProcessing, StatusPaid, true},
-		{"Paid to Refunded", StatusPaid, StatusRefunded, true},
+		{"Processing to Succeeded", StatusProcessing, StatusSucceeded, true}, // FIXED
+		{"Succeeded to Refunded", StatusSucceeded, StatusRefunded, true},       // FIXED
 
 		// The Forbidden Paths
-		{"Cannot go backwards to Created", StatusPaid, StatusCreated, false},
-		{"Refunded is terminal", StatusRefunded, StatusPaid, false},
+		{"Cannot go backwards to Created", StatusSucceeded, StatusCreated, false}, // FIXED
+		{"Refunded is terminal", StatusRefunded, StatusSucceeded, false},          // FIXED
 		{"Disputed is terminal", StatusDisputed, StatusProcessing, false},
 		{"Cannot skip to Refunded", StatusCreated, StatusRefunded, false},
 
 		// Idempotent (Same state)
-		{"Same state is allowed", StatusPaid, StatusPaid, true},
+		{"Same state is allowed", StatusSucceeded, StatusSucceeded, true}, // FIXED
 	}
 
 	for _, tt := range tests {
