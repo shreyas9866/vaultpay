@@ -150,7 +150,7 @@ func main() {
 	// --- 2. INITIALIZE HANDLERS ---
 	disputeHandler := handlers.NewDisputeHandler(store, asynqClient)
 	subHandler := handlers.NewSubscriptionHandler(store)
-
+    transferHandler := handlers.NewTransferHandler(store)
 	// --- 3. ROUTES (MUST COME AFTER ALL MIDDLEWARES) ---
 	
 	// Expose the scorecard to Prometheus
@@ -190,7 +190,8 @@ func main() {
 	// Wrap the POST routes in our new Idempotency shield!
 	r.With(vpmiddleware.Idempotency(rdb)).Post("/v1/charges", vpmiddleware.RequireAuth(chargeHandler.Create))
 	r.With(vpmiddleware.Idempotency(rdb)).Post("/v1/charges/{id}/refund", vpmiddleware.RequireAuth(chargeHandler.Refund))
-    r.With(vpmiddleware.Idempotency(rdb)).Post("/v1/disputes", vpmiddleware.RequireAuth(disputeHandler.Create))	
+    r.With(vpmiddleware.Idempotency(rdb)).Post("/v1/disputes", vpmiddleware.RequireAuth(disputeHandler.Create))
+	r.With(vpmiddleware.Idempotency(rdb)).Post("/v1/transfer",transferHandler.Transfer)
 	// GET requests don't mutate data, so they don't need idempotency
 	r.Get("/v1/charges/{id}/timeline", vpmiddleware.RequireAuth(chargeHandler.GetTimeline))
 	

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
     "time"
+	"errors"
 	"github.com/jmoiron/sqlx"
 	"github.com/shreyas9866/vaultpay/internal/models"
 )
@@ -354,4 +355,52 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*models.User,
 	query := `SELECT id, email, created_at FROM users WHERE email = $1`
 	err := s.db.GetContext(ctx, &user, query, email)
 	return &user, err
+}
+// TransferFunds securely moves money between two wallets using an ACID transaction.
+func (s *Store) TransferFunds(ctx context.Context, senderWalletID, receiverWalletID string, amount int64) error {
+	// 1. Begin the ACID Transaction
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	// Safety net: If anything fails or the function crashes, automatically undo everything.
+	defer tx.Rollback()
+
+	// 2. Lock and Deduct from Sender
+	// We use "balance >= $1" to let the database strictly enforce insufficient funds.
+	res, err := tx.ExecContext(ctx, `
+		UPDATE wallets 
+		SET balance = balance - $1, updated_at = CURRENT_TIMESTAMP 
+		WHERE id = $2 AND balance >= $1
+	`, amount, senderWalletID)
+	if err != nil {
+		return err
+	}
+	
+	rowsAffected, err := res.RowsAffected()
+	if err != nil || rowsAffected == 0 {
+		return errors.New("insufficient funds or sender wallet not found")
+	}
+
+	// 3. Credit the Receiver
+	_, err = tx.ExecContext(ctx, `
+		UPDATE wallets 
+		SET balance = balance + $1, updated_at = CURRENT_TIMESTAMP 
+		WHERE id = $2
+	`, amount, receiverWalletID)
+	if err != nil {
+		return err
+	}
+
+	// 4. Write the receipt to the immutable Ledger
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO transactions (sender_wallet_id, receiver_wallet_id, amount, status) 
+		VALUES ($1, $2, $3, 'completed')
+	`, senderWalletID, receiverWalletID, amount)
+	if err != nil {
+		return err
+	}
+
+	// 5. Everything succeeded! Lock it in permanently.
+	return tx.Commit()
 }
